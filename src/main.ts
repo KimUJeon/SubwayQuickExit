@@ -434,6 +434,10 @@ function renderCompanion() {
 }
 
 setApiSettings({ proxyUrl, kakaoApiKey, seoulApiKey, demoMode })
+if (window.isSecureContext) {
+  setAutoGpsUi(true)
+  startAutoGpsWatch()
+}
 renderCompanion()
 
 const bridge = await waitForEvenAppBridge()
