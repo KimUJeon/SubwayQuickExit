@@ -30,20 +30,26 @@ function normalizeKakaoStationName(raw: string): string {
 
 async function kakaoFetch<T>(pathAndQuery: string, config: KakaoConfig): Promise<T> {
   const proxy = config.proxyUrl?.trim().replace(/\/+$/, '')
-  if (proxy) {
-    const res = await fetch(`${proxy}/kakao${pathAndQuery}`)
-    if (!res.ok) throw new Error(`프록시 오류 (${res.status})`)
-    return (await res.json()) as T
-  }
-
   const key = config.restApiKey?.trim()
-  if (!key) {
+  if (!proxy && !key) {
     throw new Error('카카오 API 키 또는 프록시 URL을 설정해 주세요.')
   }
-  const res = await fetch(`https://dapi.kakao.com${pathAndQuery}`, {
-    headers: { Authorization: `KakaoAK ${key}` },
-  })
-  if (!res.ok) throw new Error(`카카오 API 오류 (${res.status})`)
+  const res = await fetch(
+    proxy ? `${proxy}/kakao${pathAndQuery}` : `https://dapi.kakao.com${pathAndQuery}`,
+    proxy ? undefined : { headers: { Authorization: `KakaoAK ${key}` } },
+  )
+  if (!res.ok) {
+    let detail = ''
+    try {
+      const errJson = (await res.json()) as { message?: string; error?: string }
+      detail = errJson.message || errJson.error || ''
+    } catch {
+      detail = ''
+    }
+    throw new Error(
+      detail ? `API 오류 (${res.status}): ${detail}` : `API 오류 (${res.status})`,
+    )
+  }
   return (await res.json()) as T
 }
 

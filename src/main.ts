@@ -219,18 +219,25 @@ mountUi({
     setSearchFeedback('info', '현재 위치 확인 중…')
     navigator.geolocation.getCurrentPosition(
       async pos => {
-        const nearest = await findNearestSupportedStation(
-          String(pos.coords.longitude),
-          String(pos.coords.latitude),
-          { proxyUrl, restApiKey: kakaoApiKey },
-        ).catch(() => ({ stationName: null, distanceMeters: null }))
-        if (!nearest.stationName) {
-          setSearchFeedback('error', '주변 3km 내 지원 지하철역이 없거나 API 설정이 필요합니다.')
-          return
+        try {
+          const nearest = await findNearestSupportedStation(
+            String(pos.coords.longitude),
+            String(pos.coords.latitude),
+            { proxyUrl, restApiKey: kakaoApiKey },
+          )
+          if (!nearest.stationName) {
+            setSearchFeedback('error', '주변 3km 내 지원 지하철역(2·3·4·5·7·9·신분당선)이 없습니다.')
+            return
+          }
+          const dist = nearest.distanceMeters ? ` (약 ${nearest.distanceMeters}m)` : ''
+          setSearchFeedback('ok', `현위치 출발: ${nearest.stationName}역${dist}`)
+          setRoute(nearest.stationName, toStation, exitIdx, null)
+        } catch (err) {
+          setSearchFeedback(
+            'error',
+            err instanceof Error ? err.message : '주변 지하철역 조회에 실패했습니다.',
+          )
         }
-        const dist = nearest.distanceMeters ? ` (약 ${nearest.distanceMeters}m)` : ''
-        setSearchFeedback('ok', `현위치 출발: ${nearest.stationName}역${dist}`)
-        setRoute(nearest.stationName, toStation, exitIdx, null)
       },
       err => {
         const msg =
