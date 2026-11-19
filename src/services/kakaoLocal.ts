@@ -5,13 +5,25 @@ export interface KakaoConfig {
   restApiKey?: string
 }
 
-export interface PlaceMatchResult {
-  ok: boolean
+export interface PlaceCandidate {
   placeName: string
   address: string
+  category: string
+  lat: number
+  lng: number
+}
+
+export interface PlaceSearchResult {
+  ok: boolean
+  candidates: PlaceCandidate[]
+  message: string
+}
+
+export interface NearestStationResult {
   stationName: string | null
   distanceMeters: number | null
-  message: string
+  stationLat: number | null
+  stationLng: number | null
 }
 
 const SUPPORTED_STATIONS = new Set(getAllGraphStationNames())
@@ -55,6 +67,7 @@ async function kakaoFetch<T>(pathAndQuery: string, config: KakaoConfig): Promise
 
 interface KakaoKeywordDoc {
   place_name: string
+  category_group_name?: string
   road_address_name?: string
   address_name?: string
   x: string // longitude
@@ -72,7 +85,7 @@ export async function findNearestSupportedStation(
   lng: string,
   lat: string,
   config: KakaoConfig,
-): Promise<{ stationName: string | null; distanceMeters: number | null }> {
+): Promise<NearestStationResult> {
   const data = await kakaoFetch<{ documents?: KakaoCategoryDoc[] }>(
     `/v2/local/search/category.json?category_group_code=SW8&x=${encodeURIComponent(lng)}&y=${encodeURIComponent(lat)}&radius=3000&sort=distance&size=10`,
     config,
@@ -85,73 +98,50 @@ export async function findNearestSupportedStation(
       return {
         stationName: normalized,
         distanceMeters: Number(doc.distance) || null,
+        stationLat: Number(doc.y) || null,
+        stationLng: Number(doc.x) || null,
       }
     }
   }
-  return { stationName: null, distanceMeters: null }
+  return { stationName: null, distanceMeters: null, stationLat: null, stationLng: null }
 }
 
-export async function searchPlaceAndNearestStation(
+export async function searchPlaceCandidates(
   query: string,
   config: KakaoConfig,
-): Promise<PlaceMatchResult> {
+): Promise<PlaceSearchResult> {
   const clean = query.trim()
   if (!clean) {
-    return {
-      ok: false,
-      placeName: '',
-      address: '',
-      stationName: null,
-      distanceMeters: null,
-      message: '검색어를 입력해 주세요.',
-    }
+    return { ok: false, candidates: [], message: '검색어를 입력해 주세요.' }
   }
 
   try {
     const data = await kakaoFetch<{ documents?: KakaoKeywordDoc[] }>(
-      `/v2/local/search/keyword.json?query=${encodeURIComponent(clean)}&size=3`,
+      `/v2/local/search/keyword.json?query=${encodeURIComponent(clean)}&size=8`,
       config,
     )
-    const place = data.documents?.[0]
-    if (!place) {
-      return {
-        ok: false,
-        placeName: '',
-        address: '',
-        stationName: null,
-        distanceMeters: null,
-        message: `'${clean}' 검색 결과가 없습니다.`,
-      }
+    const docs = data.documents ?? []
+    if (docs.length === 0) {
+      return { ok: false, candidates: [], message: `'${clean}' 검색 결과가 없습니다.` }
     }
 
-    const nearest = await findNearestSupportedStation(place.x, place.y, config)
-    if (!nearest.stationName) {
-      return {
-        ok: false,
-        placeName: place.place_name,
-        address: place.road_address_name || place.address_name || '',
-        stationName: null,
-        distanceMeters: null,
-        message: `'${place.place_name}' 반경 3km 내 지원 지하철역이 없습니다.`,
-      }
-    }
+    const candidates: PlaceCandidate[] = docs.map(doc => ({
+      placeName: doc.place_name,
+      address: doc.road_address_name || doc.address_name || '',
+      category: doc.category_group_name || '',
+      lat: Number(doc.y),
+      lng: Number(doc.x),
+    }))
 
-    const distText = nearest.distanceMeters !== null ? ` (도보 약 ${nearest.distanceMeters}m)` : ''
     return {
       ok: true,
-      placeName: place.place_name,
-      address: place.road_address_name || place.address_name || '',
-      stationName: nearest.stationName,
-      distanceMeters: nearest.distanceMeters,
-      message: `${place.place_name} → ${nearest.stationName}역${distText}`,
+      candidates,
+      message: `'${clean}' 검색 결과 ${candidates.length}건 — 지도나 목록에서 선택하세요.`,
     }
   } catch (err) {
     return {
       ok: false,
-      placeName: '',
-      address: '',
-      stationName: null,
-      distanceMeters: null,
+      candidates: [],
       message: err instanceof Error ? err.message : '장소 검색 실패',
     }
   }

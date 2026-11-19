@@ -1,8 +1,11 @@
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import {
   STATION_EXITS,
   getAllGraphStationNames,
   type NavRoute,
 } from './data/subwayGraph'
+import type { PlaceCandidate } from './services/kakaoLocal'
 import type { ArrivalResult } from './services/subwayApi'
 
 export interface SavedRoute {
@@ -17,11 +20,13 @@ export interface SavedRoute {
 export interface UiCallbacks {
   onChangeRoute: (from: string, to: string, exitIdx: number) => void
   onSearchPlace: (role: 'from' | 'to', query: string) => void
+  onPickPlaceCandidate: (role: 'from' | 'to', place: PlaceCandidate) => void
   onUseCurrentLocation: () => void
   onSelectSavedRoute: (route: SavedRoute) => void
   onSaveCurrentRoute: (name: string) => void
   onDeleteSavedRoute: (id: string) => void
   onSelectStep: (stepIdx: number) => void
+  onToggleAutoGps: (enabled: boolean) => void
   onSaveApiSettings: (settings: {
     proxyUrl: string
     kakaoApiKey: string
@@ -39,9 +44,13 @@ let exitSelectEl: HTMLSelectElement
 let fromSearchInputEl: HTMLInputElement
 let toSearchInputEl: HTMLInputElement
 let searchFeedbackEl: HTMLDivElement
+let mapPickerWrapEl: HTMLDivElement
+let mapContainerEl: HTMLDivElement
+let candidateListEl: HTMLDivElement
 let routeSummaryEl: HTMLDivElement
 let stepListEl: HTMLDivElement
 let activeStepDetailEl: HTMLDivElement
+let autoGpsCheckboxEl: HTMLInputElement
 let arrivalStatusEl: HTMLSpanElement
 let arrivalListEl: HTMLDivElement
 let proxyUrlInputEl: HTMLInputElement
@@ -71,7 +80,8 @@ export function mountUi(callbacks: UiCallbacks) {
         <div class="card-head">
           <div class="card-label">경로 설정 (장소 검색 또는 역 선택)</div>
           <div class="card-actions">
-            <button id="gpsBtn" class="btn-mini" type="button">📍 현위치 출발</button>
+            <button id="toggleMapBtn" class="btn-mini" type="button">🗺 지도</button>
+            <button id="gpsBtn" class="btn-mini" type="button">📍 현위치</button>
             <button id="swapBtn" class="btn-mini" type="button">⇄ 왕복</button>
           </div>
         </div>
@@ -84,6 +94,10 @@ export function mountUi(callbacks: UiCallbacks) {
           <button id="toSearchBtn" class="btn-mini" type="button">검색</button>
         </div>
         <div id="searchFeedback" class="search-feedback"></div>
+        <div id="mapPickerWrap" class="map-wrap hidden">
+          <div id="mapContainer" class="map-box"></div>
+          <div id="candidateList" class="candidate-list"></div>
+        </div>
         <div class="row">
           <select id="fromSelect" aria-label="출발역">${stationOptions}</select>
           <span class="arrow">→</span>
@@ -97,7 +111,13 @@ export function mountUi(callbacks: UiCallbacks) {
       </section>
 
       <section class="card">
-        <div id="routeSummary" class="card-label">여정 안내</div>
+        <div class="card-head">
+          <div id="routeSummary" class="card-label">여정 안내</div>
+          <label class="gps-auto-toggle">
+            <input id="autoGpsCheckbox" type="checkbox" />
+            <span>GPS 자동진행</span>
+          </label>
+        </div>
         <div id="stepList" class="chips"></div>
         <div id="activeStepDetail" class="detail-box"></div>
       </section>
@@ -138,7 +158,31 @@ export function mountUi(callbacks: UiCallbacks) {
   fromSearchInputEl = app.querySelector('#fromSearchInput')!
   toSearchInputEl = app.querySelector('#toSearchInput')!
   searchFeedbackEl = app.querySelector('#searchFeedback')!
+  mapPickerWrapEl = app.querySelector('#mapPickerWrap')!
+  mapContainerEl = app.querySelector('#mapContainer')!
+  candidateListEl = app.querySelector('#candidateList')!
   routeSummaryEl = app.querySelector('#routeSummary')!
+  autoGpsCheckboxEl = app.querySelector('#autoGpsCheckbox')!
+  autoGpsCheckboxEl.addEventListener('change', () => {
+    callbacks.onToggleAutoGps(autoGpsCheckboxEl.checked)
+  })
+
+  app.querySelector('#toggleMapBtn')!.addEventListener('click', () => {
+    const isHidden = mapPickerWrapEl.classList.toggle('hidden')
+    if (!isHidden) {
+      ensureMap(callbacks)
+      window.setTimeout(() => leafletMap?.invalidateSize(), 60)
+    }
+  })
+
+  candidateListEl.addEventListener('click', e => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-candidate-idx]')
+    if (!btn) return
+    const idx = Number(btn.dataset.candidateIdx)
+    const place = currentCandidates[idx]
+    if (!place) return
+    callbacks.onPickPlaceCandidate(currentMapRole, place)
+  })
   stepListEl = app.querySelector('#stepList')!
   activeStepDetailEl = app.querySelector('#activeStepDetail')!
   arrivalStatusEl = app.querySelector('#arrivalStatus')!
@@ -364,6 +408,143 @@ export function renderArrivals(result: ArrivalResult) {
     .join('')
 }
 
+let leafletMap: L.Map | null = null
+let mapLayerGroup: L.LayerGroup | null = null
+let currentCandidates: PlaceCandidate[] = []
+let currentMapRole: 'from' | 'to' = 'to'
+
+function ensureMap(callbacks: UiCallbacks) {
+  if (leafletMap || !mapContainerEl) return
+  leafletMap = L.map(mapContainerEl, {
+    center: [37.5172, 127.0473], // Seoul Gangnam center
+    zoom: 13,
+    zoomControl: false,
+  })
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap',
+  }).addTo(leafletMap)
+  mapLayerGroup = L.layerGroup().addTo(leafletMap)
+
+  leafletMap.on('click', (e: L.LeafletMouseEvent) => {
+    callbacks.onPickPlaceCandidate(currentMapRole, {
+      placeName: '지도 선택 위치',
+      address: `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`,
+      category: '',
+      lat: e.latlng.lat,
+      lng: e.latlng.lng,
+    })
+  })
+}
+
+export function showMapCandidates(
+  role: 'from' | 'to',
+  candidates: PlaceCandidate[],
+  callbacks: UiCallbacks,
+) {
+  currentMapRole = role
+  currentCandidates = candidates
+  if (!mapPickerWrapEl || !candidateListEl) return
+
+  mapPickerWrapEl.classList.remove('hidden')
+  ensureMap(callbacks)
+  window.setTimeout(() => leafletMap?.invalidateSize(), 60)
+
+  if (mapLayerGroup) {
+    mapLayerGroup.clearLayers()
+  }
+
+  const bounds: L.LatLngExpression[] = []
+  candidates.forEach((c, idx) => {
+    const pos: L.LatLngExpression = [c.lat, c.lng]
+    bounds.push(pos)
+    if (mapLayerGroup) {
+      const icon = L.divIcon({
+        className: 'map-pin-wrap',
+        html: `<div class="map-pin">${idx + 1}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      })
+      const marker = L.marker(pos, { icon }).addTo(mapLayerGroup)
+      marker.on('click', () => {
+        callbacks.onPickPlaceCandidate(role, c)
+      })
+    }
+  })
+
+  if (leafletMap && bounds.length > 0) {
+    if (bounds.length === 1) {
+      leafletMap.setView(bounds[0], 15)
+    } else {
+      leafletMap.fitBounds(L.latLngBounds(bounds), { padding: [26, 26], maxZoom: 15 })
+    }
+  }
+
+  candidateListEl.innerHTML = candidates
+    .map(
+      (c, idx) => `
+      <button type="button" class="candidate-item" data-candidate-idx="${idx}">
+        <span class="candidate-num">${idx + 1}</span>
+        <span class="candidate-info">
+          <strong>${escapeHtml(c.placeName)}</strong>
+          <small>${escapeHtml(c.address)}</small>
+        </span>
+      </button>
+    `,
+    )
+    .join('')
+}
+
+export function showStationPinOnMap(
+  place: PlaceCandidate,
+  stationName: string,
+  stationLat: number | null,
+  stationLng: number | null,
+  callbacks: UiCallbacks,
+) {
+  if (!mapPickerWrapEl) return
+  ensureMap(callbacks)
+  if (!mapLayerGroup || !leafletMap) return
+  mapLayerGroup.clearLayers()
+
+  const placePos: L.LatLngExpression = [place.lat, place.lng]
+  L.marker(placePos, {
+    icon: L.divIcon({
+      className: 'map-pin-wrap',
+      html: `<div class="map-pin active">★</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+    }),
+  }).addTo(mapLayerGroup)
+
+  const pts: L.LatLngExpression[] = [placePos]
+  if (stationLat && stationLng) {
+    const stPos: L.LatLngExpression = [stationLat, stationLng]
+    pts.push(stPos)
+    L.marker(stPos, {
+      icon: L.divIcon({
+        className: 'map-pin-wrap',
+        html: `<div class="map-pin station">${escapeHtml(stationName)}</div>`,
+        iconSize: [64, 22],
+        iconAnchor: [32, 11],
+      }),
+    }).addTo(mapLayerGroup)
+    L.polyline([placePos, stPos], { color: '#3cfa44', dashArray: '4 4', weight: 2 }).addTo(
+      mapLayerGroup,
+    )
+  }
+
+  if (pts.length === 1) {
+    leafletMap.setView(pts[0], 15)
+  } else {
+    leafletMap.fitBounds(L.latLngBounds(pts), { padding: [32, 32], maxZoom: 16 })
+  }
+}
+
+export function setAutoGpsUi(enabled: boolean) {
+  if (autoGpsCheckboxEl) autoGpsCheckboxEl.checked = enabled
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 }
@@ -371,15 +552,14 @@ function escapeHtml(s: string): string {
 function injectStyles() {
   const css = `
     :root { color-scheme: dark; }
-    html, body { margin: 0; height: auto; min-height: 100%; overflow-y: auto;
-      -webkit-overflow-scrolling: touch; overscroll-behavior-y: auto;
+    html, body { margin: 0; height: 100%; overflow: hidden;
       background: #1e1e1e; color: #e5e5e5;
       font: 15px/1.45 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif;
       touch-action: manipulation; -webkit-text-size-adjust: 100%; }
-    #app { display: flex; height: auto; min-height: 100%; align-items: stretch;
-      justify-content: flex-start; padding: 0; text-align: left; }
+    #app { display: block; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      overscroll-behavior-y: contain; padding: 0; text-align: left; }
     .panel { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 680px;
-      margin: 0 auto; padding: 18px; box-sizing: border-box; }
+      margin: 0 auto; padding: 18px 18px 48px; box-sizing: border-box; }
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     h1 { font-size: 18px; font-weight: 700; margin: 0; }
     .subtitle { color: #9a9a9a; font-size: 12px; }
@@ -425,6 +605,24 @@ function injectStyles() {
     .search-feedback { font-size: 12px; color: #9a9a9a; min-height: 16px; }
     .search-feedback.ok { color: #3cfa44; }
     .search-feedback.error { color: #ff6b63; }
+    .hidden { display: none !important; }
+    .map-wrap { display: flex; flex-direction: column; gap: 8px; }
+    .map-box { width: 100%; height: 220px; border-radius: 10px; border: 1px solid #3c3c3c; overflow: hidden; background: #141414; }
+    .candidate-list { display: flex; flex-direction: column; gap: 6px; max-height: 170px; overflow-y: auto; }
+    .candidate-item { display: flex; align-items: center; gap: 8px; text-align: left;
+      background: #202020; border: 1px solid #363636; border-radius: 8px; padding: 7px 10px; color: #e5e5e5; cursor: pointer; }
+    .candidate-num { width: 20px; height: 20px; border-radius: 50%; background: #235d28; color: #3cfa44;
+      font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .candidate-info { display: flex; flex-direction: column; min-width: 0; }
+    .candidate-info strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .candidate-info small { font-size: 11px; color: #9a9a9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .map-pin-wrap { background: transparent; border: none; }
+    .map-pin { width: 24px; height: 24px; border-radius: 50%; background: #1e1e1e; border: 2px solid #3cfa44;
+      color: #3cfa44; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .map-pin.active { background: #3cfa44; color: #111; }
+    .map-pin.station { width: auto; padding: 2px 8px; border-radius: 999px; background: #183a1b; color: #3cfa44; white-space: nowrap; }
+    .gps-auto-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #cfcfcf; cursor: pointer; white-space: nowrap; }
+    .gps-auto-toggle input { flex: 0 0 auto; width: auto; margin: 0; }
     .btn { background: #363636; color: #f0f0f0; border: 1px solid #4d4d4d; border-radius: 8px;
       padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
     .btn.primary { background: #235d28; border-color: #3cfa44; color: #3cfa44; }

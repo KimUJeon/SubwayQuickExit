@@ -10,7 +10,8 @@ import { renderTrainDiagram } from './data/subwayData'
 import { findSubwayRoute, type NavRoute } from './data/subwayGraph'
 import {
   findNearestSupportedStation,
-  searchPlaceAndNearestStation,
+  searchPlaceCandidates,
+  type PlaceCandidate,
 } from './services/kakaoLocal'
 import {
   createDemoArrivals,
@@ -22,9 +23,13 @@ import {
   renderArrivals,
   renderRouteState,
   setApiSettings,
+  setAutoGpsUi,
   setSearchFeedback,
   setStatus,
+  showMapCandidates,
+  showStationPinOnMap,
   type SavedRoute,
+  type UiCallbacks,
 } from './ui'
 
 const SAVED_ROUTES_KEY = 'subway_quick_exit_nav_routes'
@@ -183,25 +188,131 @@ async function refreshArrivals() {
   scheduleHudRender()
 }
 
-mountUi({
+let autoGpsWatchId: number | null = null
+let lastAutoGpsCheckMs = 0
+const AUTO_GPS_MIN_INTERVAL_MS = 15_000
+const AUTO_GPS_RADIUS_M = 450
+
+function stopAutoGpsWatch() {
+  if (autoGpsWatchId !== null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(autoGpsWatchId)
+    autoGpsWatchId = null
+  }
+}
+
+function startAutoGpsWatch() {
+  if (!window.isSecureContext) {
+    setAutoGpsUi(false)
+    setSearchFeedback('error', 'GPS 자동진행은 HTTPS(배포/터널) 환경에서만 지원됩니다.')
+    return
+  }
+  if (!navigator.geolocation) {
+    setAutoGpsUi(false)
+    setSearchFeedback('error', '이 기기에서 GPS를 지원하지 않습니다.')
+    return
+  }
+  stopAutoGpsWatch()
+  setSearchFeedback('info', 'GPS 자동진행 활성화 (정차역 450m 이내 자동 전환)')
+  autoGpsWatchId = navigator.geolocation.watchPosition(
+    async pos => {
+      const now = Date.now()
+      if (now - lastAutoGpsCheckMs < AUTO_GPS_MIN_INTERVAL_MS) return
+      lastAutoGpsCheckMs = now
+      if (!currentRoute) return
+
+      try {
+        const nearest = await findNearestSupportedStation(
+          String(pos.coords.longitude),
+          String(pos.coords.latitude),
+          { proxyUrl, restApiKey: kakaoApiKey },
+        )
+        if (
+          !nearest.stationName ||
+          nearest.distanceMeters === null ||
+          nearest.distanceMeters > AUTO_GPS_RADIUS_M
+        ) {
+          return
+        }
+        const matchedIdx = currentRoute.steps.findIndex(
+          (s, idx) => idx > stepIdx && s.stationName === nearest.stationName,
+        )
+        if (matchedIdx !== -1) {
+          stepIdx = matchedIdx
+          setSearchFeedback(
+            'ok',
+            `GPS 자동진행: ${nearest.stationName}역 진입 (약 ${nearest.distanceMeters}m)`,
+          )
+          syncAll(true)
+        }
+      } catch {
+        // Ignore transient GPS lookup errors during background watch
+      }
+    },
+    err => {
+      stopAutoGpsWatch()
+      setAutoGpsUi(false)
+      if (err.code === 1) {
+        setSearchFeedback('error', '위치 권한이 거부되어 GPS 자동진행이 꺼졌습니다.')
+      }
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 },
+  )
+}
+
+const uiCallbacks: UiCallbacks = {
   onChangeRoute: (from, to, nextExitIdx) => {
     setRoute(from, to, nextExitIdx, null)
   },
   onSearchPlace: async (role, query) => {
     setSearchFeedback('info', `'${query}' 검색 중…`)
-    const result = await searchPlaceAndNearestStation(query, {
+    const result = await searchPlaceCandidates(query, {
       proxyUrl,
       restApiKey: kakaoApiKey,
     })
-    if (!result.ok || !result.stationName) {
+    if (!result.ok || result.candidates.length === 0) {
       setSearchFeedback('error', result.message)
       return
     }
-    setSearchFeedback('ok', `${role === 'from' ? '출발' : '도착'}: ${result.message}`)
-    if (role === 'from') {
-      setRoute(result.stationName, toStation, exitIdx, null)
-    } else {
-      setRoute(fromStation, result.stationName, 0, null)
+    setSearchFeedback('ok', result.message)
+    showMapCandidates(role, result.candidates, uiCallbacks)
+  },
+  onPickPlaceCandidate: async (role: 'from' | 'to', place: PlaceCandidate) => {
+    setSearchFeedback('info', `'${place.placeName}' 주변 지하철역 확인 중…`)
+    try {
+      const nearest = await findNearestSupportedStation(
+        String(place.lng),
+        String(place.lat),
+        { proxyUrl, restApiKey: kakaoApiKey },
+      )
+      if (!nearest.stationName) {
+        setSearchFeedback(
+          'error',
+          `'${place.placeName}' 반경 3km 내 지원 지하철역이 없습니다.`,
+        )
+        return
+      }
+      showStationPinOnMap(
+        place,
+        nearest.stationName,
+        nearest.stationLat,
+        nearest.stationLng,
+        uiCallbacks,
+      )
+      const dist = nearest.distanceMeters !== null ? ` (도보 약 ${nearest.distanceMeters}m)` : ''
+      setSearchFeedback(
+        'ok',
+        `${role === 'from' ? '출발' : '도착'}: ${place.placeName} → ${nearest.stationName}역${dist}`,
+      )
+      if (role === 'from') {
+        setRoute(nearest.stationName, toStation, exitIdx, null)
+      } else {
+        setRoute(fromStation, nearest.stationName, 0, null)
+      }
+    } catch (err) {
+      setSearchFeedback(
+        'error',
+        err instanceof Error ? err.message : '주변 지하철역 조회 실패',
+      )
     }
   },
   onUseCurrentLocation: () => {
@@ -281,6 +392,14 @@ mountUi({
     stepIdx = Math.max(0, Math.min(currentRoute.steps.length - 1, idx))
     syncAll(true)
   },
+  onToggleAutoGps: enabled => {
+    if (enabled) {
+      startAutoGpsWatch()
+    } else {
+      stopAutoGpsWatch()
+      setSearchFeedback('info', 'GPS 자동진행을 껐습니다.')
+    }
+  },
   onSaveApiSettings: settings => {
     proxyUrl = settings.proxyUrl || DEFAULT_PROXY_URL
     kakaoApiKey = settings.kakaoApiKey
@@ -297,7 +416,9 @@ mountUi({
   onRefreshArrivals: () => {
     void refreshArrivals()
   },
-})
+}
+
+mountUi(uiCallbacks)
 
 function renderCompanion() {
   renderRouteState(
@@ -453,6 +574,7 @@ const unsubscribe = bridge.onEvenHubEvent(event => {
 
   if (ev === OsEventTypeList.DOUBLE_CLICK_EVENT) {
     window.clearInterval(pollTimer)
+    stopAutoGpsWatch()
     bridge.shutDownPageContainer(1)
     return
   }
@@ -469,6 +591,7 @@ const unsubscribe = bridge.onEvenHubEvent(event => {
 
   if (ev === OsEventTypeList.SYSTEM_EXIT_EVENT || ev === OsEventTypeList.ABNORMAL_EXIT_EVENT) {
     window.clearInterval(pollTimer)
+    stopAutoGpsWatch()
     unsubscribe()
   }
 })
