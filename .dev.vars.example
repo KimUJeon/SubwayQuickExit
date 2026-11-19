@@ -1,0 +1,4 @@
+# 로컬 개발 시 이 파일을 복사해 .dev.vars 로 저장한 뒤 키를 입력하세요.
+# (.dev.vars 는 git 에 커밋되지 않도록 주의하세요)
+KAKAO_REST_API_KEY=여기에_카카오_REST_API_키
+SEOUL_API_KEY=여기에_서울열린데이터_인증키
