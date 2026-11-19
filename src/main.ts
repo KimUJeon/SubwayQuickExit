@@ -583,12 +583,12 @@ const unsubscribe = bridge.onEvenHubEvent(event => {
     return
   }
 
-  if (ev === OsEventTypeList.CLICK_EVENT || ev === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+  if (ev === OsEventTypeList.CLICK_EVENT || ev === OsEventTypeList.SCROLL_TOP_EVENT) {
     stepBy(1)
     return
   }
 
-  if (ev === OsEventTypeList.SCROLL_TOP_EVENT) {
+  if (ev === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
     stepBy(-1)
     return
   }
