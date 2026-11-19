@@ -17,6 +17,7 @@ import {
   createDemoArrivals,
   fetchRealtimeArrivals,
   type ArrivalResult,
+  type TrainArrival,
 } from './services/subwayApi'
 import {
   mountUi,
@@ -123,6 +124,13 @@ function formatTopBarText(): string {
   return `[${currentRoute.fromName}→${currentRoute.toName}] ${remainText}${liveTag}`
 }
 
+function formatArrivalLine(prefix: string, a: TrainArrival): string {
+  const dest = (a.trainLineNm.split(' - ')[0] || a.updnLine || '').trim()
+  const statusTag = a.btrainSttus && a.btrainSttus !== '일반' ? `[${a.btrainSttus}] ` : ''
+  const posTag = a.arvlMsg3 ? ` (${a.arvlMsg3})` : ''
+  return `${prefix}: ${statusTag}${dest ? `${dest} · ` : ''}${a.arvlMsg2}${posTag}`
+}
+
 function formatMainHudText(): string {
   if (!currentRoute) {
     return '출발역과 도착역을 다르게 선택하면\n최적 경로와 빠른하차 문이 표시됩니다.'
@@ -133,22 +141,23 @@ function formatMainHudText(): string {
   const diagram = renderTrainDiagram(cur.totalCars, cur.car)
   const doorRole = cur.kind === 'board' || cur.kind === 'ride' ? '추천탑승' : '빠른하차'
 
-  let liveLine = `실시간: ${latestArrival.message}`
-  if (latestArrival.ok && latestArrival.arrivals.length > 0) {
-    liveLine = latestArrival.arrivals
-      .map(a => `> ${a.arvlMsg2} (${a.arvlMsg3 || a.updnLine})`)
-      .join(' / ')
-    liveLine = `실시간: ${liveLine}`
-  }
-
-  return [
-    `현재: ${cur.actionTitle} (${stepIdx + 1}/${currentRoute.steps.length})`,
-    `방향: ${cur.direction}`,
+  const lines = [
+    `현재: ${cur.actionTitle} · ${cur.direction} (${stepIdx + 1}/${currentRoute.steps.length})`,
     `${doorRole}: [ ${cur.car} - ${cur.door} ] 번 문 -> ${cur.targetLabel}`,
     `열차: ${diagram}`,
     `안내: ${cur.note}`,
-    liveLine,
-  ].join('\n')
+  ]
+
+  if (latestArrival.ok && latestArrival.arrivals.length > 0) {
+    lines.push(formatArrivalLine('이번차', latestArrival.arrivals[0]))
+    if (latestArrival.arrivals[1]) {
+      lines.push(formatArrivalLine('다음차', latestArrival.arrivals[1]))
+    }
+  } else {
+    lines.push(`실시간: ${latestArrival.message}`)
+  }
+
+  return lines.join('\n')
 }
 
 async function refreshArrivals() {
