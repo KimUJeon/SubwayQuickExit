@@ -396,7 +396,7 @@ export function findSubwayRoute(
       const remainingToGoal = Math.max(0, totalStops - stopsPassed)
 
       let kind: NavStep['kind'] = 'ride'
-      let actionTitle = `${leg.line} 이동 중 (${remainingToLegEnd}정거장 후 ${leg.endTransferToLine ? '환승' : '하차'})`
+      let actionTitle = `${node.station}역 (${remainingToLegEnd}정거장 후 ${leg.endTransferToLine ? '환승' : '하차'})`
 
       if (li === 0 && isFirstOfLeg) {
         kind = 'board'
