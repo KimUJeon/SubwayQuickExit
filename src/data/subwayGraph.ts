@@ -1,3 +1,5 @@
+import { cleanGraphStationName } from '../utils/stationName.ts'
+
 export interface NavStep {
   index: number
   kind: 'board' | 'ride' | 'transfer' | 'arrive'
@@ -32,6 +34,10 @@ export interface ExitInfo {
 }
 
 const LINE_STATIONS: Record<string, string[]> = {
+  '1호선': [
+    '청량리', '제기동', '신설동', '동묘앞', '동대문', '종로5가', '종로3가', '종각', '시청', '서울역',
+    '남영', '용산', '노량진', '대방', '신길', '영등포', '신도림', '구로', '가산디지털단지',
+  ],
   '2호선': [
     '시청', '을지로입구', '을지로3가', '을지로4가', '동대문역사문화공원', '신당', '상왕십리', '왕십리',
     '한양대', '뚝섬', '성수', '건대입구', '구의', '강변', '잠실나루', '잠실', '잠실새내', '종합운동장',
@@ -61,6 +67,10 @@ const LINE_STATIONS: Record<string, string[]> = {
     '고속터미널', '내방', '총신대입구(이수)', '남성', '숭실대입구', '상도', '장승배기', '신대방삼거리',
     '보라매', '신풍', '대림', '남구로', '가산디지털단지', '철산', '광명사거리', '천왕', '온수',
   ],
+  '8호선': [
+    '암사역사공원', '암사', '천호', '강동구청', '몽촌토성', '잠실', '석촌', '송파', '가락시장',
+    '문정', '장지', '복정', '산성', '남한산성입구', '단대오거리', '신흥', '수진', '모란',
+  ],
   '9호선': [
     '김포공항', '공항시장', '신방화', '마곡나루', '양천향교', '가양', '증미', '등촌', '염창', '신목동',
     '선유도', '당산', '국회의사당', '여의도', '샛강', '노량진', '노들', '흑석', '동작', '구반포',
@@ -76,11 +86,13 @@ const LINE_STATIONS: Record<string, string[]> = {
 const CIRCULAR_LINES = new Set(['2호선'])
 
 const LINE_CARS: Record<string, number> = {
+  '1호선': 10,
   '2호선': 10,
   '3호선': 10,
   '4호선': 10,
   '5호선': 8,
   '7호선': 8,
+  '8호선': 6,
   '9호선': 6,
   '신분당선': 6,
 }
@@ -100,6 +112,23 @@ const TRANSFER_DOORS: Record<string, { car: number; door: number; note: string }
   '여의도|9호선|5호선': { car: 3, door: 2, note: '5호선 방화·하남 방면 에스컬레이터' },
   '여의도|5호선|9호선': { car: 4, door: 3, note: '9호선 급행·일반 승강장 연결' },
   '잠실|2호선|8호선': { car: 8, door: 4, note: '8호선 연결통로 인접' },
+  '잠실|8호선|2호선': { car: 3, door: 2, note: '2호선 내·외선 연결통로' },
+  '석촌|8호선|9호선': { car: 4, door: 1, note: '9호선 급행·일반 승강장 연결' },
+  '석촌|9호선|8호선': { car: 3, door: 3, note: '8호선 모란·암사 방면' },
+  '천호|5호선|8호선': { car: 2, door: 1, note: '8호선 잠실·모란 방면 계단' },
+  '천호|8호선|5호선': { car: 5, door: 2, note: '5호선 방화·하남 방면' },
+  '서울역|1호선|4호선': { car: 5, door: 2, note: '4호선 환승통로 에스컬레이터' },
+  '서울역|4호선|1호선': { car: 5, door: 3, note: '1호선 종각·구로 방면' },
+  '시청|1호선|2호선': { car: 4, door: 1, note: '2호선 내선/외선 환승통로' },
+  '시청|2호선|1호선': { car: 5, door: 2, note: '1호선 서울역·종각 방면' },
+  '종로3가|1호선|3호선': { car: 3, door: 2, note: '3호선 환승 에스컬레이터' },
+  '종로3가|3호선|1호선': { car: 2, door: 1, note: '1호선 환승통로' },
+  '노량진|1호선|9호선': { car: 6, door: 3, note: '9호선 급행·일반 환승게이트' },
+  '노량진|9호선|1호선': { car: 4, door: 2, note: '1호선 용산·구로 방면' },
+  '신도림|1호선|2호선': { car: 5, door: 2, note: '2호선 중앙 환승통로' },
+  '신도림|2호선|1호선': { car: 5, door: 1, note: '1호선 영등포·구로 방면' },
+  '가산디지털단지|1호선|7호선': { car: 2, door: 1, note: '7호선 지하 환승 에스컬레이터' },
+  '가산디지털단지|7호선|1호선': { car: 7, door: 4, note: '1호선 지상 승강장 연결' },
   '교대|2호선|3호선': { car: 5, door: 1, note: '3호선 중앙 환승 계단' },
   '교대|3호선|2호선': { car: 6, door: 2, note: '2호선 내·외선 중앙 계단' },
   '신논현|9호선|신분당선': { car: 4, door: 2, note: '신분당선 직통 에스컬레이터' },
@@ -165,6 +194,18 @@ export const STATION_EXITS: Record<string, ExitInfo[]> = {
   ],
 }
 
+const DEFAULT_EXIT: ExitInfo = {
+  label: '중앙 출구/개찰구',
+  car: 5,
+  door: 2,
+  note: '역 중앙 에스컬레이터 방면',
+}
+
+export function getStationExits(stationName: string): ExitInfo[] {
+  const clean = cleanGraphStationName(stationName)
+  return STATION_EXITS[clean] ?? [DEFAULT_EXIT]
+}
+
 export function getAllGraphStationNames(): string[] {
   const set = new Set<string>()
   for (const list of Object.values(LINE_STATIONS)) {
@@ -174,18 +215,12 @@ export function getAllGraphStationNames(): string[] {
 }
 
 export function getStationLines(stationName: string): string[] {
-  const clean = cleanName(stationName)
+  const clean = cleanGraphStationName(stationName)
   const lines: string[] = []
   for (const [line, list] of Object.entries(LINE_STATIONS)) {
     if (list.includes(clean)) lines.push(line)
   }
   return lines
-}
-
-function cleanName(name: string): string {
-  const t = name.trim()
-  if (t === '서울역') return '서울역'
-  return t.endsWith('역') && t.length > 1 ? t.slice(0, -1) : t
 }
 
 interface GraphNode {
@@ -266,13 +301,58 @@ function getDirectionLabel(line: string, fromStation: string, nextStation?: stri
   return i2 > i1 ? `하행 (${nextStation} 방면)` : `상행 (${nextStation} 방면)`
 }
 
+interface HeapItem {
+  key: string
+  cost: number
+}
+
+class MinHeap {
+  private items: HeapItem[] = []
+
+  get size(): number {
+    return this.items.length
+  }
+
+  push(item: HeapItem): void {
+    this.items.push(item)
+    let i = this.items.length - 1
+    while (i > 0) {
+      const p = (i - 1) >> 1
+      if (this.items[p].cost <= this.items[i].cost) break
+      ;[this.items[p], this.items[i]] = [this.items[i], this.items[p]]
+      i = p
+    }
+  }
+
+  pop(): HeapItem | undefined {
+    const top = this.items[0]
+    const last = this.items.pop()
+    if (this.items.length > 0 && last) {
+      this.items[0] = last
+      let i = 0
+      const len = this.items.length
+      while (true) {
+        const l = i * 2 + 1
+        const r = i * 2 + 2
+        let smallest = i
+        if (l < len && this.items[l].cost < this.items[smallest].cost) smallest = l
+        if (r < len && this.items[r].cost < this.items[smallest].cost) smallest = r
+        if (smallest === i) break
+        ;[this.items[i], this.items[smallest]] = [this.items[smallest], this.items[i]]
+        i = smallest
+      }
+    }
+    return top
+  }
+}
+
 export function findSubwayRoute(
   rawFrom: string,
   rawTo: string,
   preferredExitIdx = 0,
 ): NavRoute | null {
-  const from = cleanName(rawFrom)
-  const to = cleanName(rawTo)
+  const from = cleanGraphStationName(rawFrom)
+  const to = cleanGraphStationName(rawTo)
   if (!from || !to || from === to) return null
 
   const startKeys = Array.from(GRAPH.nodes.values())
@@ -289,18 +369,17 @@ export function findSubwayRoute(
   // Dijkstra
   const dist = new Map<string, number>()
   const prev = new Map<string, string | null>()
-  const queue: Array<{ key: string; cost: number }> = []
+  const heap = new MinHeap()
 
   for (const sk of startKeys) {
     dist.set(sk, 0)
     prev.set(sk, null)
-    queue.push({ key: sk, cost: 0 })
+    heap.push({ key: sk, cost: 0 })
   }
 
   let foundGoal: string | null = null
-  while (queue.length > 0) {
-    queue.sort((a, b) => a.cost - b.cost)
-    const cur = queue.shift()!
+  while (heap.size > 0) {
+    const cur = heap.pop()!
     if (cur.cost > (dist.get(cur.key) ?? Infinity)) continue
     if (goalSet.has(cur.key)) {
       foundGoal = cur.key
@@ -311,7 +390,7 @@ export function findSubwayRoute(
       if (nextCost < (dist.get(edge.to) ?? Infinity)) {
         dist.set(edge.to, nextCost)
         prev.set(edge.to, cur.key)
-        queue.push({ key: edge.to, cost: nextCost })
+        heap.push({ key: edge.to, cost: nextCost })
       }
     }
   }
@@ -344,9 +423,7 @@ export function findSubwayRoute(
     }
   }
 
-  const exitChoices = STATION_EXITS[to] ?? [
-    { label: '중앙 출구/개찰구', car: 5, door: 2, note: '역 중앙 에스컬레이터 방면' },
-  ]
+  const exitChoices = getStationExits(to)
   const chosenExit = exitChoices[Math.max(0, Math.min(exitChoices.length - 1, preferredExitIdx))]
 
   const totalStops = rawPath.filter((_, idx) => idx > 0 && rawPath[idx].line === rawPath[idx - 1].line).length
@@ -409,16 +486,20 @@ export function findSubwayRoute(
         actionTitle = `${node.station}역 하차 → ${leg.endTransferToLine} 환승`
       }
 
-      const direction = nextNode
-        ? getDirectionLabel(leg.line, node.station, nextNode.station)
-        : leg.nodes.length >= 2
-          ? getDirectionLabel(leg.line, leg.nodes[leg.nodes.length - 2].station, node.station)
-          : leg.line
+      const nextLeg = kind === 'transfer' ? legs[li + 1] : undefined
+      const stepLine = nextLeg ? nextLeg.line : leg.line
+      const direction = nextLeg
+        ? getDirectionLabel(nextLeg.line, nextLeg.nodes[0].station, nextLeg.nodes[1]?.station)
+        : nextNode
+          ? getDirectionLabel(leg.line, node.station, nextNode.station)
+          : leg.nodes.length >= 2
+            ? getDirectionLabel(leg.line, leg.nodes[leg.nodes.length - 2].station, node.station)
+            : leg.line
 
       steps.push({
         index: steps.length,
         kind,
-        line: leg.line,
+        line: stepLine,
         stationName: node.station,
         direction,
         remainingToGoal,

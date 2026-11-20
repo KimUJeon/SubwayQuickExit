@@ -1,12 +1,12 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import {
-  STATION_EXITS,
-  getAllGraphStationNames,
+  getStationExits,
   type NavRoute,
 } from './data/subwayGraph'
 import type { PlaceCandidate } from './services/kakaoLocal'
 import type { ArrivalResult } from './services/subwayApi'
+import { formatStationDisplay } from './utils/stationName.ts'
 
 export interface SavedRoute {
   id: string
@@ -38,8 +38,8 @@ export interface UiCallbacks {
 
 let statusEl: HTMLDivElement
 let savedRouteListEl: HTMLDivElement
-let fromSelectEl: HTMLSelectElement
-let toSelectEl: HTMLSelectElement
+let routeEndpointEl: HTMLDivElement
+let routeActionRowEl: HTMLDivElement
 let exitSelectEl: HTMLSelectElement
 let fromSearchInputEl: HTMLInputElement
 let toSearchInputEl: HTMLInputElement
@@ -50,6 +50,9 @@ let candidateListEl: HTMLDivElement
 let routeSummaryEl: HTMLDivElement
 let stepListEl: HTMLDivElement
 let activeStepDetailEl: HTMLDivElement
+let saveRouteBtnEl: HTMLButtonElement
+let saveRouteFormEl: HTMLFormElement
+let saveRouteInputEl: HTMLInputElement
 let autoGpsCheckboxEl: HTMLInputElement
 let arrivalStatusEl: HTMLSpanElement
 let arrivalListEl: HTMLDivElement
@@ -58,13 +61,11 @@ let kakaoApiKeyInputEl: HTMLInputElement
 let apiKeyInputEl: HTMLInputElement
 let demoModeCheckboxEl: HTMLInputElement
 
-const ALL_STATIONS = getAllGraphStationNames()
+let currentFromStation = ''
+let currentToStation = ''
 
 export function mountUi(callbacks: UiCallbacks) {
   const app = document.querySelector<HTMLDivElement>('#app')!
-  const stationOptions = ALL_STATIONS.map(
-    s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`,
-  ).join('')
 
   app.innerHTML = `
     <main class="panel">
@@ -78,7 +79,7 @@ export function mountUi(callbacks: UiCallbacks) {
 
       <section class="card">
         <div class="card-head">
-          <div class="card-label">경로 설정 (장소 검색 또는 역 선택)</div>
+          <div class="card-label">경로 설정 (장소 검색 · 지도 · 현위치)</div>
           <div class="card-actions">
             <button id="toggleMapBtn" class="btn-mini" type="button">🗺 지도</button>
             <button id="gpsBtn" class="btn-mini" type="button">📍 현위치</button>
@@ -98,15 +99,16 @@ export function mountUi(callbacks: UiCallbacks) {
           <div id="mapContainer" class="map-box"></div>
           <div id="candidateList" class="candidate-list"></div>
         </div>
-        <div class="row">
-          <select id="fromSelect" aria-label="출발역">${stationOptions}</select>
-          <span class="arrow">→</span>
-          <select id="toSelect" aria-label="도착역">${stationOptions}</select>
-        </div>
-        <div class="row">
-          <select id="exitSelect" aria-label="도착 출구"></select>
+        <div id="routeEndpoint" class="route-endpoint hidden"></div>
+        <div id="routeActionRow" class="row hidden">
+          <select id="exitSelect" aria-label="도착 출구" class="hidden"></select>
           <button id="saveRouteBtn" class="btn" type="button">+ 즐겨찾기</button>
         </div>
+        <form id="saveRouteForm" class="row hidden">
+          <input id="saveRouteInput" placeholder="즐겨찾기 이름 입력" maxlength="30" />
+          <button class="btn primary" type="submit">저장</button>
+          <button id="cancelSaveRouteBtn" class="btn-mini" type="button">취소</button>
+        </form>
         <div id="savedRouteList" class="chips"></div>
       </section>
 
@@ -152,8 +154,8 @@ export function mountUi(callbacks: UiCallbacks) {
 
   statusEl = app.querySelector('#status')!
   savedRouteListEl = app.querySelector('#savedRouteList')!
-  fromSelectEl = app.querySelector('#fromSelect')!
-  toSelectEl = app.querySelector('#toSelect')!
+  routeEndpointEl = app.querySelector('#routeEndpoint')!
+  routeActionRowEl = app.querySelector('#routeActionRow')!
   exitSelectEl = app.querySelector('#exitSelect')!
   fromSearchInputEl = app.querySelector('#fromSearchInput')!
   toSearchInputEl = app.querySelector('#toSearchInput')!
@@ -162,6 +164,9 @@ export function mountUi(callbacks: UiCallbacks) {
   mapContainerEl = app.querySelector('#mapContainer')!
   candidateListEl = app.querySelector('#candidateList')!
   routeSummaryEl = app.querySelector('#routeSummary')!
+  saveRouteBtnEl = app.querySelector('#saveRouteBtn')!
+  saveRouteFormEl = app.querySelector('#saveRouteForm')!
+  saveRouteInputEl = app.querySelector('#saveRouteInput')!
   autoGpsCheckboxEl = app.querySelector('#autoGpsCheckbox')!
   autoGpsCheckboxEl.addEventListener('change', () => {
     callbacks.onToggleAutoGps(autoGpsCheckboxEl.checked)
@@ -219,29 +224,40 @@ export function mountUi(callbacks: UiCallbacks) {
   })
 
   const emitRouteChange = () => {
-    callbacks.onChangeRoute(fromSelectEl.value, toSelectEl.value, Number(exitSelectEl.value) || 0)
+    callbacks.onChangeRoute(
+      currentFromStation,
+      currentToStation,
+      Number(exitSelectEl.value) || 0,
+    )
   }
 
-  fromSelectEl.addEventListener('change', emitRouteChange)
-  toSelectEl.addEventListener('change', () => {
-    syncExitOptions(toSelectEl.value, 0)
-    emitRouteChange()
-  })
   exitSelectEl.addEventListener('change', emitRouteChange)
 
   app.querySelector('#swapBtn')!.addEventListener('click', () => {
-    const prevFrom = fromSelectEl.value
-    const prevTo = toSelectEl.value
-    fromSelectEl.value = prevTo
-    toSelectEl.value = prevFrom
-    syncExitOptions(prevFrom, 0)
-    emitRouteChange()
+    if (!currentFromStation && !currentToStation) return
+    const nextFrom = currentToStation
+    const nextTo = currentFromStation
+    syncExitOptions(nextTo, 0)
+    callbacks.onChangeRoute(nextFrom, nextTo, 0)
   })
 
-  app.querySelector('#saveRouteBtn')!.addEventListener('click', () => {
-    const defaultName = `${fromSelectEl.value}→${toSelectEl.value}`
-    const name = window.prompt('즐겨찾기 경로 이름을 입력하세요:', defaultName)?.trim()
+  saveRouteBtnEl.addEventListener('click', () => {
+    if (saveRouteBtnEl.disabled) return
+    saveRouteInputEl.value = `${currentFromStation}→${currentToStation}`
+    saveRouteFormEl.classList.remove('hidden')
+    saveRouteInputEl.focus()
+    saveRouteInputEl.select()
+  })
+
+  app.querySelector('#cancelSaveRouteBtn')!.addEventListener('click', () => {
+    saveRouteFormEl.classList.add('hidden')
+  })
+
+  saveRouteFormEl.addEventListener('submit', e => {
+    e.preventDefault()
+    const name = saveRouteInputEl.value.trim()
     if (!name) return
+    saveRouteFormEl.classList.add('hidden')
     callbacks.onSaveCurrentRoute(name)
   })
 
@@ -287,13 +303,17 @@ let cachedSavedRoutes: SavedRoute[] = []
 
 function syncExitOptions(toStation: string, selectedIdx: number) {
   if (!exitSelectEl) return
-  const exits = STATION_EXITS[toStation] ?? [
-    { label: '중앙 출구/개찰구', car: 5, door: 2, note: '역 중앙 에스컬레이터 방면' },
-  ]
+  if (!toStation) {
+    exitSelectEl.innerHTML = ''
+    exitSelectEl.classList.add('hidden')
+    return
+  }
+  const exits = getStationExits(toStation)
   exitSelectEl.innerHTML = exits
     .map((ex, i) => `<option value="${i}">${escapeHtml(ex.label)} (${ex.car}-${ex.door}번 문)</option>`)
     .join('')
   exitSelectEl.value = String(Math.max(0, Math.min(exits.length - 1, selectedIdx)))
+  exitSelectEl.classList.toggle('hidden', exits.length <= 1)
 }
 
 export function setStatus(kind: 'ok' | 'error', text: string) {
@@ -330,13 +350,22 @@ export function renderRouteState(
   activeSavedId: string | null,
 ) {
   cachedSavedRoutes = savedRoutes
-  if (fromSelectEl && ALL_STATIONS.includes(from)) fromSelectEl.value = from
-  if (toSelectEl && ALL_STATIONS.includes(to)) {
-    toSelectEl.value = to
-    syncExitOptions(to, exitIdx)
+  currentFromStation = from
+  currentToStation = to
+  if (routeEndpointEl) {
+    if (!from && !to) {
+      routeEndpointEl.classList.add('hidden')
+    } else {
+      routeEndpointEl.classList.remove('hidden')
+      const fromLabel = from ? formatStationDisplay(from) : '미선택'
+      const toLabel = to ? formatStationDisplay(to) : '미선택'
+      routeEndpointEl.innerHTML = `<span>출발: <strong>${escapeHtml(fromLabel)}</strong></span><span class="arrow">→</span><span>도착: <strong>${escapeHtml(toLabel)}</strong></span>`
+    }
   }
+  syncExitOptions(to, exitIdx)
 
   if (savedRouteListEl) {
+    savedRouteListEl.classList.toggle('hidden', savedRoutes.length === 0)
     savedRouteListEl.innerHTML = savedRoutes
       .map(
         r => `
@@ -351,8 +380,26 @@ export function renderRouteState(
 
   if (!routeSummaryEl || !stepListEl || !activeStepDetailEl) return
 
+  if (routeActionRowEl) {
+    routeActionRowEl.classList.toggle('hidden', !route)
+  }
+  if (saveRouteBtnEl) {
+    saveRouteBtnEl.disabled = !route
+    if (!route && saveRouteFormEl) {
+      saveRouteFormEl.classList.add('hidden')
+    }
+  }
+
   if (!route) {
-    routeSummaryEl.textContent = '출발역과 도착역을 다르게 선택해 주세요.'
+    if (!from && !to) {
+      routeSummaryEl.textContent = '대기 중 · 출발역과 도착역을 선택하거나 검색해 주세요.'
+    } else if (!from) {
+      routeSummaryEl.textContent = `도착: ${formatStationDisplay(to)} · 출발역을 선택해 주세요.`
+    } else if (!to) {
+      routeSummaryEl.textContent = `출발: ${formatStationDisplay(from)} · 도착역을 선택해 주세요.`
+    } else {
+      routeSummaryEl.textContent = '출발역과 도착역을 다르게 선택해 주세요.'
+    }
     stepListEl.innerHTML = ''
     activeStepDetailEl.innerHTML = ''
     return
@@ -448,7 +495,7 @@ export function showMapCandidates(
 
   mapPickerWrapEl.classList.remove('hidden')
   ensureMap(callbacks)
-  window.setTimeout(() => leafletMap?.invalidateSize(), 60)
+  leafletMap?.invalidateSize()
 
   if (mapLayerGroup) {
     mapLayerGroup.clearLayers()
@@ -573,6 +620,10 @@ function injectStyles() {
     .card-actions { display: flex; align-items: center; gap: 6px; }
     .row { display: flex; align-items: center; gap: 8px; }
     .arrow { color: #3cfa44; font-weight: 700; }
+    .route-endpoint { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      background: #202020; border: 1px solid #353535; border-radius: 8px; padding: 8px 11px;
+      font-size: 13px; color: #cfcfcf; }
+    .route-endpoint strong { color: #f5f5f5; }
     select, input { flex: 1; background: #1c1c1c; color: #f0f0f0; border: 1px solid #444;
       border-radius: 8px; padding: 8px 10px; font-size: 13px; min-width: 0; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -625,6 +676,7 @@ function injectStyles() {
     .gps-auto-toggle input { flex: 0 0 auto; width: auto; margin: 0; }
     .btn { background: #363636; color: #f0f0f0; border: 1px solid #4d4d4d; border-radius: 8px;
       padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn.primary { background: #235d28; border-color: #3cfa44; color: #3cfa44; }
     footer { font-size: 12px; color: #7b7b7b; text-align: center; }
   `
