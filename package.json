@@ -1,11 +1,12 @@
 {
   "name": "subway-quick-exit",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test": "node --experimental-strip-types --test tests/subway.test.ts",
     "preview": "vite preview",
     "pack": "npm run build && evenhub pack app.json dist -o SubwayQuickExit.ehpk",
     "simulate": "evenhub-simulator http://localhost:5173",

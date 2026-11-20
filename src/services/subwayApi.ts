@@ -1,3 +1,5 @@
+import { toSeoulApiStationName } from '../utils/stationName.ts'
+
 export interface TrainArrival {
   trainLineNm: string // e.g. "성수행 - 방배방면"
   arvlMsg2: string // e.g. "2분 30초 후", "전역 도착", "강남 진입"
@@ -35,9 +37,7 @@ const LINE_ID_MAP: Record<string, string> = {
 }
 
 export function normalizeStationName(name: string): string {
-  const trimmed = name.trim()
-  if (trimmed === '서울역') return '서울'
-  return trimmed.endsWith('역') && trimmed.length > 1 ? trimmed.slice(0, -1) : trimmed
+  return toSeoulApiStationName(name)
 }
 
 function detectDirectionKeyword(direction: string): string | null {
@@ -116,12 +116,13 @@ export async function fetchRealtimeArrivals(
 
     let filtered = rawList
     if (targetSubwayId) {
-      const byLine = filtered.filter(item => item.subwayId === targetSubwayId)
-      if (byLine.length > 0) filtered = byLine
+      filtered = filtered.filter(item => item.subwayId === targetSubwayId)
     }
     if (dirKeyword) {
       const byDir = filtered.filter(item => item.updnLine === dirKeyword)
-      if (byDir.length > 0) filtered = byDir
+      if (byDir.length > 0 || filtered.some(item => Boolean(item.updnLine))) {
+        filtered = byDir
+      }
     }
 
     const arrivals: TrainArrival[] = filtered.slice(0, 2).map(item => ({

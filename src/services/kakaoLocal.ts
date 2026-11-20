@@ -1,4 +1,5 @@
 import { getAllGraphStationNames } from '../data/subwayGraph'
+import { normalizeKakaoStationName } from '../utils/stationName'
 
 export interface KakaoConfig {
   proxyUrl?: string
@@ -27,18 +28,6 @@ export interface NearestStationResult {
 }
 
 const SUPPORTED_STATIONS = new Set(getAllGraphStationNames())
-
-function normalizeKakaoStationName(raw: string): string {
-  // e.g. "강남역 2호선" or "총신대입구역(이수)" -> match graph station name
-  const firstToken = raw.trim().split(/\s+/)[0] ?? ''
-  if (firstToken === '서울역') return '서울역'
-  const stripped = firstToken.endsWith('역') && firstToken.length > 1 ? firstToken.slice(0, -1) : firstToken
-  if (SUPPORTED_STATIONS.has(stripped)) return stripped
-  if (SUPPORTED_STATIONS.has(firstToken)) return firstToken
-  // Handle "이수" <-> "총신대입구(이수)"
-  if (stripped === '이수' || stripped === '총신대입구') return '총신대입구(이수)'
-  return stripped
-}
 
 async function kakaoFetch<T>(pathAndQuery: string, config: KakaoConfig): Promise<T> {
   const proxy = config.proxyUrl?.trim().replace(/\/+$/, '')
@@ -93,11 +82,12 @@ export async function findNearestSupportedStation(
 
   const docs = data.documents ?? []
   for (const doc of docs) {
-    const normalized = normalizeKakaoStationName(doc.place_name)
+    const normalized = normalizeKakaoStationName(doc.place_name, SUPPORTED_STATIONS)
     if (SUPPORTED_STATIONS.has(normalized)) {
+      const dist = Number(doc.distance)
       return {
         stationName: normalized,
-        distanceMeters: Number(doc.distance) || null,
+        distanceMeters: doc.distance !== '' && Number.isFinite(dist) ? dist : null,
         stationLat: Number(doc.y) || null,
         stationLng: Number(doc.x) || null,
       }
